@@ -1,0 +1,43 @@
+import sounddevice as sd
+from scipy.io.wavfile import write
+from scipy.io import wavfile as wav
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy.fft as fft
+import simpleaudio as sa (after you pip install simpleaudio)
+
+fs=44100 #sample rate
+seconds=25 #duration of recording
+myrecording2=sd.rec(int(seconds*fs), samplerate=fs, channels=1)
+sd.wait()
+
+sd.play(myrecording2)
+sd.wait()
+
+write('healthy_patient_AA.wav',fs, myrecording2) 
+
+fs,x= wav.read('healthy_patient_AA.wav') 
+time=np.arange(len(x))/float(fs) #gives time 
+plt.subplot(2,1,1)
+plt.plot(time,x)   
+plt.xlabel('Time (s)',fontsize=20)
+plt.ylabel('f(t)',fontsize=20)
+plt.tight_layout()
+##########################################################################
+plt.figure('Healthy Patient Vocal Profile')
+plt.subplot(2,1,2) # 6,1,3 means 6 rows of graphs & 1 column & 3rd graph, for good spacing
+X=fft.fft(x)
+N=X.size #gives the bin number,total number of bins
+freqbin=np.arange(0,N)/N*fs  # the np.arange give evenly spaced values within a 
+                             # given interval if it was np.arange(1, 21, 3)
+                             #then start from 1 to 21 in three steps                           
+plt.plot(freqbin,np.abs(X))
+plt.xlim([0,fs/2])    #sets the xlim on left to 0 and right to fs/2 because other 
+plt.tight_layout() #half is mirror or symmetry b/c negative part is projected up
+plt.xlabel('v in Hz',fontsize=20)   # v in Hz for the actual signal the pos. part no mirror freq. included
+plt.ylabel('abs(F(v)',fontsize=20)
+
+pitch=np.argmax(np.abs(X)) # gives the index, the location of the pitch freq. not actual value
+
+print('pitch=')
+print(freqbin[np.argmax(np.abs(X))])
