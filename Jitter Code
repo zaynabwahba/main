@@ -1,0 +1,551 @@
+import os
+import sys
+from sys import exit
+
+# sys.path.append(os.path.join(os.path.dirname(__file__), './praat'))
+print(sys.path)
+import pandas as pd
+import platform
+
+__all__ = ['PitchJitterShimmer']
+
+
+def is_os_window():
+    
+    sysstr = platform.system()
+    if (sysstr.lower() == "windows"):
+        return True
+    elif (sysstr.lower() == "linux"):
+        return False
+    return False
+
+
+class PitchJitterShimmer(object):
+    def __init__(self, praat_file, praat_path='./praat'):
+        """
+        初始化
+        :param praat_file: praat_file脚本文件的路径
+        :param praat_path: praat可执行程序的路径
+        """
+        super(PitchJitterShimmer, self).__init__()
+        exec_file = 'praat.exe' if is_os_window() else 'praat'
+        if not os.path.exists(os.path.join(praat_path, exec_file)):
+            print('Not found runnable praat. Exit.')
+            exit(1)
+        self.praat_file = praat_file
+        self.praat_path = praat_path
+
+    def calculate(self, voice_file, save_file=False):
+        """
+        开始计算
+        :param voice_file: 声音文件
+		:param save_file: 是否保留文件
+        :return: pd.DataFrame
+        """
+        voice_file = os.path.abspath(voice_file)
+        exec_file = os.path.join(os.path.abspath(self.praat_path), 'praat')
+        command = '{} {} {}'.format(exec_file, self.praat_file, voice_file)
+        os.system(command)
+        # 读取文件
+        csv_file = voice_file.replace('.wav', '.csv')
+        df = pd.read_csv(csv_file)
+        if not save_file:
+            os.remove(csv_file)
+        return df
+
+
+def main():
+    praat_file = './praat/praat.praat'
+    praat_path = './praat'
+    pjs = PitchJitterShimmer(praat_file, praat_path)
+    voice_file = './test/001_a1_PCGITA.wav'
+    print(pjs.calculate(voice_file, True))
+
+
+if __name__ == '__main__':
+    main()
+
+
+from scipy.io.wavfile import read
+import os
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+plt.rcParams["font.family"] = "Times New Roman"
+
+from .phonation_functions import jitter_env, logEnergy, shimmer_env, APQ, PPQ
+import pandas as pd
+path_app = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(path_app+'/../')
+from utils import dynamic2statict, save_dict_kaldimat,get_dict
+import praat.praat_functions as praat_functions
+from script_mananger import script_manager
+import torch
+from tqdm import tqdm
+
+
+class Phonation:
+    """
+    Compute phonation features from sustained vowels and continuous speech.
+    For continuous speech, the features are computed over voiced segments
+    Seven descriptors are computed:
+    1. First derivative of the fundamental Frequency
+    2. Second derivative of the fundamental Frequency
+    3. Jitter
+    4. Shimmer
+    5. Amplitude perturbation quotient
+    6. Pitch perturbation quotient
+    7. Logaritmic Energy
+    Static or dynamic matrices can be computed:
+    Static matrix is formed with 29 features formed with (seven descriptors) x (4 functionals: mean, std, skewness, kurtosis) + degree of Unvoiced
+    Dynamic matrix is formed with the seven descriptors computed for frames of 40 ms.
+    Notes:
+    1. In dynamic features the first 11 frames of each recording are not considered to be able to stack the APQ and PPQ descriptors with the remaining ones.
+    2. The fundamental frequency is computed the RAPT algorithm. To use the PRAAT method,  change the "self.pitch method" variable in the class constructor.
+    Script is called as follows
+    >>> python phonation.py <file_or_folder_audio> <file_features> <static (true or false)> <plots (true or false)> <format (csv, txt, npy, kaldi, torch)>
+    Examples command line:
+    >>> python phonation.py "../audios/001_a1_PCGITA.wav" "phonationfeaturesAst.txt" "true" "true" "txt"
+    >>> python phonation.py "../audios/098_u1_PCGITA.wav" "phonationfeaturesUst.csv" "true" "true" "csv"
+    >>> python phonation.py "../audios/098_u1_PCGITA.wav" "phonationfeaturesUdyn.pt" "false" "true" "torch"
+    >>> python phonation.py "../audios/" "phonationfeaturesst.txt" "true" "false" "txt"
+    >>> python phonation.py "../audios/" "phonationfeaturesst.csv" "true" "false" "csv"
+    >>> python phonation.py "../audios/" "phonationfeaturesdyn.pt" "false" "false" "torch"
+    Examples directly in Python
+    >>> from disvoice.phonation import Phonation
+    >>> phonation=Phonation()
+    >>> file_audio="../audios/001_a1_PCGITA.wav"
+    >>> features=phonation.extract_features_file(file_audio, static, plots=True, fmt="numpy")
+    >>> features2=phonation.extract_features_file(file_audio, static, plots=True, fmt="dataframe")
+    >>> features3=phonation.extract_features_file(file_audio, dynamic, plots=True, fmt="torch")
+    
+    >>> path_audios="../audios/"
+    >>> features1=phonation.extract_features_path(path_audios, static, plots=False, fmt="numpy")
+    >>> features2=phonation.extract_features_path(path_audios, static, plots=False, fmt="torch")
+    >>> features3=phonation.extract_features_path(path_audios, static, plots=False, fmt="dataframe")
+    """
+    def __init__(self):
+        self.pitch_method="rapt"
+        self.size_frame=0.04
+        self.size_step=0.02
+        self.minf0=60
+        self.maxf0=350
+        self.voice_bias=-0.2
+        self.energy_thr_percent=0.025
+        self.PATH = os.path.dirname(os.path.abspath(__file__))
+        self.head=["DF0", "DDF0", "Jitter", "Shimmer", "apq", "ppq", "logE"]
+
+
+
+    def plot_phon(self, data_audio,fs,F0,logE):
+        """Plots of the phonation features
+        :param data_audio: speech signal.
+        :param fs: sampling frequency
+        :param F0: contour of the fundamental frequency
+        :param logE: contour of the log-energy
+        :returns: plots of the phonation features.
+        """
+        plt.figure(figsize=(6,6))
+        plt.subplot(211)
+        ax1=plt.gca()
+        t=np.arange(len(data_audio))/float(fs)
+        ax1.plot(t, data_audio, 'k', label="speech signal", alpha=0.8)
+        ax1.set_ylabel('Amplitude', fontsize=12)
+        ax1.set_xlabel('Time (s)', fontsize=12)
+        ax1.set_xlim([0, t[-1]])
+        plt.grid(True)
+        ax2 = ax1.twinx()
+        fsp=len(F0)/t[-1]
+        t2=np.arange(len(F0))/fsp
+        ax2.plot(t2, F0, 'r', linewidth=2,label=r"F_0")
+        ax2.set_ylabel(r'$F_0$ (Hz)', color='r', fontsize=12)
+        ax2.tick_params('y', colors='r')
+
+        plt.grid(True)
+
+        plt.subplot(212)
+        Esp=len(logE)/t[-1]
+        t2=np.arange(len(logE))/float(Esp)
+        plt.plot(t2, logE, color='k', linewidth=2.0)
+        plt.xlabel('Time (s)', fontsize=14)
+        plt.ylabel('Energy (dB)', fontsize=14)
+        plt.xlim([0, t[-1]])
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    def extract_features_file(self, audio, static=True, plots=False, fmt="npy", kaldi_file=""):
+        """Extract the phonation features from an audio file
+        
+        :param audio: .wav audio file.
+        :param static: whether to compute and return statistic functionals over the feature matrix, or return the feature matrix computed over frames
+        :param plots: timeshift to extract the features
+        :param fmt: format to return the features (npy, dataframe, torch, kaldi)
+        :param kaldi_file: file to store kaldi features, only valid when fmt=="kaldi"
+        :returns: features computed from the audio file.
+        >>> phonation=Phonation()
+        >>> file_audio="../audios/001_a1_PCGITA.wav"
+        >>> features1=phonation.extract_features_file(file_audio, static=True, plots=True, fmt="npy")
+        >>> features2=phonation.extract_features_file(file_audio, static=True, plots=True, fmt="dataframe")
+        >>> features3=phonation.extract_features_file(file_audio, static=False, plots=True, fmt="torch")
+        >>> phonation.extract_features_file(file_audio, static=False, plots=False, fmt="kaldi", kaldi_file="./test")
+        """
+        fs, data_audio=read(audio)
+        data_audio=data_audio-np.mean(data_audio)
+        data_audio=data_audio/float(np.max(np.abs(data_audio)))
+        size_frameS=self.size_frame*float(fs)
+        size_stepS=self.size_step*float(fs)
+        overlap=size_stepS/size_frameS
+        if self.pitch_method == 'praat':
+            name_audio=audio.split('/')
+            temp_uuid='phon'+name_audio[-1][0:-4]
+            if not os.path.exists(self.PATH+'/../tempfiles/'):
+                os.makedirs(self.PATH+'/../tempfiles/')
+            temp_filename_vuv=self.PATH+'/../tempfiles/tempVUV'+temp_uuid+'.txt'
+            temp_filename_f0=self.PATH+'/../tempfiles/tempF0'+temp_uuid+'.txt'
+            praat_functions.praat_vuv(audio, temp_filename_f0, temp_filename_vuv, time_stepF0=self.size_step, minf0=self.minf0, maxf0=self.maxf0)
+            F0,_=praat_functions.decodeF0(temp_filename_f0,len(data_audio)/float(fs),self.size_step)
+            os.remove(temp_filename_vuv)
+            os.remove(temp_filename_f0)
+        elif self.pitch_method == 'rapt':
+            data_audiof=np.asarray(data_audio*(2**15), dtype=np.float32)
+            F0=pysptk.sptk.rapt(data_audiof, fs, int(size_stepS), min=self.minf0, max=self.maxf0, voice_bias=self.voice_bias, otype='f0')
+        F0nz=F0[F0!=0]
+        Jitter=jitter_env(F0nz, len(F0nz))
+        nF=int((len(data_audio)/size_frameS/overlap))-1
+        Amp=[]
+        logE=[]
+        apq=[]
+        ppq=[]
+        DF0=np.diff(F0nz, 1)
+        DDF0=np.diff(DF0,1)
+        F0z=F0[F0==0]
+        totaldurU=len(F0z)
+        lnz=0
+        for l in range(nF):
+            data_frame=data_audio[int(l*size_stepS):int(l*size_stepS+size_frameS)]
+            energy=10*logEnergy(data_frame)
+            if F0[l]!=0:
+                Amp.append(np.max(np.abs(data_frame)))
+                logE.append(energy)
+                if lnz>=12: # TODO:
+                    amp_arr=np.asarray([Amp[j] for j in range(lnz-12, lnz)])
+                    #print(amp_arr)
+                    apq.append(APQ(amp_arr))
+                if lnz>=6: # TODO:
+                    f0arr=np.asarray([F0nz[j] for j in range(lnz-6, lnz)])
+                    ppq.append(PPQ(1/f0arr))
+                lnz=lnz+1
+
+        Shimmer=shimmer_env(Amp, len(Amp))
+        apq=np.asarray(apq)
+        ppq=np.asarray(ppq)
+        logE=np.asarray(logE)
+
+
+        if len(apq)==0:
+            print("warning, there is not enough long voiced segments to compute the APQ, in this case APQ=shimmer")
+            apq=Shimmer
+
+        if plots:
+            self.plot_phon(data_audio,fs,F0,logE)
+
+        if len(Shimmer)==len(apq):
+            feat_mat=np.vstack((DF0[5:], DDF0[4:], Jitter[6:], Shimmer[6:], apq[6:], ppq, logE[6:])).T
+        else:
+            feat_mat=np.vstack((DF0[11:], DDF0[10:], Jitter[12:], Shimmer[12:], apq, ppq[6:], logE[12:])).T
+
+        feat_v=dynamic2statict([DF0, DDF0, Jitter, Shimmer, apq, ppq, logE])
+
+
+        if fmt in("npy","txt"):
+            if static:
+                return feat_v
+            return feat_mat
+        if fmt in("dataframe","csv"):
+            if static:
+                head_st=[]
+                df={}
+                for k in ["avg", "std", "skewness", "kurtosis"]:
+                    for h in self.head:
+                        head_st.append(k+" "+h)
+                for e, k in enumerate(head_st):
+                    df[k]=[feat_v[e]]
+                            
+                return pd.DataFrame(df)
+            else:
+                df={}
+                for e, k in enumerate(self.head):
+                    df[k]=feat_mat[:,e]
+                return pd.DataFrame(df)
+        if fmt=="torch":
+            if static:
+                feat_t=torch.from_numpy(feat_v)
+                return feat_t
+            return torch.from_numpy(feat_mat)
+
+        if fmt=="kaldi":
+            if static:
+                raise ValueError("Kaldi is only supported for dynamic features")
+            name_all=audio.split('/')
+            dictX={name_all[-1]:feat_mat}
+            save_dict_kaldimat(dictX, kaldi_file)
+        else:
+            raise ValueError(fmt+" is not supported")
+
+    def extract_features_path(self, path_audio, static=True, plots=False, fmt="npy", kaldi_file=""):
+        """Extract the phonation features for audios inside a path
+        
+        :param path_audio: directory with (.wav) audio files inside, sampled at 16 kHz
+        :param static: whether to compute and return statistic functionals over the feature matrix, or return the feature matrix computed over frames
+        :param plots: timeshift to extract the features
+        :param fmt: format to return the features (npy, dataframe, torch, kaldi)
+        :param kaldi_file: file to store kaldifeatures, only valid when fmt=="kaldi"
+        :returns: features computed from the audio file.
+        >>> phonation=Phonation()
+        >>> path_audio="../audios/"
+        >>> features1=phonation.extract_features_path(path_audio, static=True, plots=False, fmt="npy")
+        >>> features2=phonation.extract_features_path(path_audio, static=True, plots=False, fmt="csv")
+        >>> features3=phonation.extract_features_path(path_audio, static=False, plots=True, fmt="torch")
+        >>> phonation.extract_features_path(path_audio, static=False, plots=False, fmt="kaldi", kaldi_file="./test.ark")
+        """
+        hf=os.listdir(path_audio)
+        hf.sort()
+
+        pbar=tqdm(range(len(hf)))
+        ids=[]
+
+        Features=[]
+        for j in pbar:
+            pbar.set_description("Processing %s" % hf[j])
+            audio_file=path_audio+hf[j]
+            feat=self.extract_features_file(audio_file, static=static, plots=plots, fmt="npy")
+            Features.append(feat)
+            if static:
+                ids.append(hf[j])
+            else:
+                ids.append(np.repeat(hf[j], feat.shape[0]))
+        
+        Features=np.vstack(Features)
+        ids=np.hstack(ids)
+        if fmt in("npy","txt"):
+            return Features
+        if fmt in("dataframe","csv"):
+            if static:
+                head_st=[]
+                df={}
+                for k in ["avg", "std", "skewness", "kurtosis"]:
+                    for h in self.head:
+                        head_st.append(k+" "+h)
+                for e, k in enumerate(head_st):
+                    df[k]=Features[:,e]
+            else:
+                df={}
+                for e, k in enumerate(self.head):
+                    df[k]=Features[:,e]
+            df["id"]=ids
+            return pd.DataFrame(df)
+        if fmt=="torch":
+            return torch.from_numpy(Features)
+        if fmt=="kaldi":
+            if static:
+                raise ValueError("Kaldi is only supported for dynamic features")
+            dictX=get_dict(Features, ids)
+            save_dict_kaldimat(dictX, kaldi_file)
+        else:
+            raise ValueError(fmt+" is not supported")
+
+if __name__=="__main__":
+
+    if len(sys.argv)!=6:
+        print("python phonation.py <file_or_folder_audio> <file_features> <static (true, false)> <plots (true,  false)> <format (csv, txt, npy, kaldi, torch)>")
+        sys.exit()
+
+    phonation=Phonation()
+    script_manager(sys.argv, phonation)
+
+
+import glob
+import numpy as np
+import pandas as pd
+import parselmouth 
+import statistics
+
+
+from parselmouth.praat import call
+from scipy.stats.mstats import zscore
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+# This is the function to measure source acoustics using default male parameters.
+
+def measurePitch(voiceID, f0min, f0max, unit):
+    sound = parselmouth.Sound(voiceID) # read the sound
+    duration = call(sound, "Get total duration") # duration
+    pitch = call(sound, "To Pitch", 0.0, f0min, f0max) #create a praat pitch object
+    meanF0 = call(pitch, "Get mean", 0, 0, unit) # get mean pitch
+    stdevF0 = call(pitch, "Get standard deviation", 0 ,0, unit) # get standard deviation
+    harmonicity = call(sound, "To Harmonicity (cc)", 0.01, f0min, 0.1, 1.0)
+    hnr = call(harmonicity, "Get mean", 0, 0)
+    pointProcess = call(sound, "To PointProcess (periodic, cc)", f0min, f0max)
+    localJitter = call(pointProcess, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
+    localabsoluteJitter = call(pointProcess, "Get jitter (local, absolute)", 0, 0, 0.0001, 0.02, 1.3)
+    rapJitter = call(pointProcess, "Get jitter (rap)", 0, 0, 0.0001, 0.02, 1.3)
+    ppq5Jitter = call(pointProcess, "Get jitter (ppq5)", 0, 0, 0.0001, 0.02, 1.3)
+    ddpJitter = call(pointProcess, "Get jitter (ddp)", 0, 0, 0.0001, 0.02, 1.3)
+    localShimmer =  call([sound, pointProcess], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    localdbShimmer = call([sound, pointProcess], "Get shimmer (local_dB)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    apq3Shimmer = call([sound, pointProcess], "Get shimmer (apq3)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    aqpq5Shimmer = call([sound, pointProcess], "Get shimmer (apq5)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    apq11Shimmer =  call([sound, pointProcess], "Get shimmer (apq11)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    ddaShimmer = call([sound, pointProcess], "Get shimmer (dda)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
+    
+    return duration, meanF0, stdevF0, hnr, localJitter, localabsoluteJitter, rapJitter, ppq5Jitter, ddpJitter, localShimmer, localdbShimmer, apq3Shimmer, aqpq5Shimmer, apq11Shimmer, ddaShimmer
+
+# This function measures formants using Formant Position formula
+def measureFormants(sound, wave_file, f0min,f0max):
+    sound = parselmouth.Sound(sound) # read the sound
+    pitch = call(sound, "To Pitch (cc)", 0, f0min, 15, 'no', 0.03, 0.45, 0.01, 0.35, 0.14, f0max)
+    pointProcess = call(sound, "To PointProcess (periodic, cc)", f0min, f0max)
+    
+    formants = call(sound, "To Formant (burg)", 0.0025, 5, 5000, 0.025, 50)
+    numPoints = call(pointProcess, "Get number of points")
+
+    f1_list = []
+    f2_list = []
+    f3_list = []
+    f4_list = []
+    
+    # Measure formants only at glottal pulses
+    for point in range(0, numPoints):
+        point += 1
+        t = call(pointProcess, "Get time from index", point)
+        f1 = call(formants, "Get value at time", 1, t, 'Hertz', 'Linear')
+        f2 = call(formants, "Get value at time", 2, t, 'Hertz', 'Linear')
+        f3 = call(formants, "Get value at time", 3, t, 'Hertz', 'Linear')
+        f4 = call(formants, "Get value at time", 4, t, 'Hertz', 'Linear')
+        f1_list.append(f1)
+        f2_list.append(f2)
+        f3_list.append(f3)
+        f4_list.append(f4)
+    
+    f1_list = [f1 for f1 in f1_list if str(f1) != 'nan']
+    f2_list = [f2 for f2 in f2_list if str(f2) != 'nan']
+    f3_list = [f3 for f3 in f3_list if str(f3) != 'nan']
+    f4_list = [f4 for f4 in f4_list if str(f4) != 'nan']
+    
+    # calculate mean formants across pulses
+    f1_mean = statistics.mean(f1_list)
+    f2_mean = statistics.mean(f2_list)
+    f3_mean = statistics.mean(f3_list)
+    f4_mean = statistics.mean(f4_list)
+    
+    # calculate median formants across pulses, this is what is used in all subsequent calcualtions
+    # you can use mean if you want, just edit the code in the boxes below to replace median with mean
+    f1_median = statistics.median(f1_list)
+    f2_median = statistics.median(f2_list)
+    f3_median = statistics.median(f3_list)
+    f4_median = statistics.median(f4_list)
+    
+    return f1_mean, f2_mean, f3_mean, f4_mean, f1_median, f2_median, f3_median, f4_median
+
+def runPCA(df):
+    # z-score the Jitter and Shimmer measurements
+    measures = ['localJitter', 'localabsoluteJitter', 'rapJitter', 'ppq5Jitter', 'ddpJitter',
+                'localShimmer', 'localdbShimmer', 'apq3Shimmer', 'apq5Shimmer', 'apq11Shimmer', 'ddaShimmer']
+    x = df.loc[:, measures].values
+    x = StandardScaler().fit_transform(x)
+    # PCA
+    pca = PCA(n_components=2)
+    principalComponents = pca.fit_transform(x)
+    principalDf = pd.DataFrame(data = principalComponents, columns = ['JitterPCA', 'ShimmerPCA'])
+    principalDf
+    return principalDf
+
+# create lists to put the results
+file_list = []
+duration_list = []
+mean_F0_list = []
+sd_F0_list = []
+hnr_list = []
+localJitter_list = []
+localabsoluteJitter_list = []
+rapJitter_list = []
+ppq5Jitter_list = []
+ddpJitter_list = []
+localShimmer_list = []
+localdbShimmer_list = []
+apq3Shimmer_list = []
+aqpq5Shimmer_list = []
+apq11Shimmer_list = []
+ddaShimmer_list = []
+f1_mean_list = []
+f2_mean_list = []
+f3_mean_list = []
+f4_mean_list = []
+f1_median_list = []
+f2_median_list = []
+f3_median_list = []
+f4_median_list = []
+
+# Go through all the wave files in the folder and measure all the acoustics
+for wave_file in glob.glob("audio/*.wav"):
+    sound = parselmouth.Sound(wave_file)
+    (duration, meanF0, stdevF0, hnr, localJitter, localabsoluteJitter, rapJitter, ppq5Jitter, ddpJitter, 
+     localShimmer, localdbShimmer, apq3Shimmer, aqpq5Shimmer, apq11Shimmer, ddaShimmer) = measurePitch(
+        sound, 75, 300, "Hertz")
+    (f1_mean, f2_mean, f3_mean, f4_mean, f1_median, f2_median, f3_median, f4_median) = measureFormants(
+        sound, wave_file, 75, 300)
+    file_list.append(wave_file) # make an ID list
+    duration_list.append(duration) # make duration list
+    mean_F0_list.append(meanF0) # make a mean F0 list
+    sd_F0_list.append(stdevF0) # make a sd F0 list
+    hnr_list.append(hnr) #add HNR data
+    
+    # add raw jitter and shimmer measures
+    localJitter_list.append(localJitter)
+    localabsoluteJitter_list.append(localabsoluteJitter)
+    rapJitter_list.append(rapJitter)
+    ppq5Jitter_list.append(ppq5Jitter)
+    ddpJitter_list.append(ddpJitter)
+    localShimmer_list.append(localShimmer)
+    localdbShimmer_list.append(localdbShimmer)
+    apq3Shimmer_list.append(apq3Shimmer)
+    aqpq5Shimmer_list.append(aqpq5Shimmer)
+    apq11Shimmer_list.append(apq11Shimmer)
+    ddaShimmer_list.append(ddaShimmer)
+    
+    # add the formant data
+    f1_mean_list.append(f1_mean)
+    f2_mean_list.append(f2_mean)
+    f3_mean_list.append(f3_mean)
+    f4_mean_list.append(f4_mean)
+    f1_median_list.append(f1_median)
+    f2_median_list.append(f2_median)
+    f3_median_list.append(f3_median)
+    f4_median_list.append(f4_median)
+
+# Add the data to Pandas
+df = pd.DataFrame(np.column_stack([file_list, duration_list, mean_F0_list, sd_F0_list, hnr_list, 
+                                   localJitter_list, localabsoluteJitter_list, rapJitter_list, 
+                                   ppq5Jitter_list, ddpJitter_list, localShimmer_list, 
+                                   localdbShimmer_list, apq3Shimmer_list, aqpq5Shimmer_list, 
+                                   apq11Shimmer_list, ddaShimmer_list, f1_mean_list, 
+                                   f2_mean_list, f3_mean_list, f4_mean_list, 
+                                   f1_median_list, f2_median_list, f3_median_list, 
+                                   f4_median_list]),
+                                   columns=['voiceID', 'duration', 'meanF0Hz', 'stdevF0Hz', 'HNR', 
+                                            'localJitter', 'localabsoluteJitter', 'rapJitter', 
+                                            'ppq5Jitter', 'ddpJitter', 'localShimmer', 
+                                            'localdbShimmer', 'apq3Shimmer', 'apq5Shimmer', 
+                                            'apq11Shimmer', 'ddaShimmer', 'f1_mean', 'f2_mean', 
+                                            'f3_mean', 'f4_mean', 'f1_median', 
+                                            'f2_median', 'f3_median', 'f4_median'])
+
+pcaData = runPCA(df) # Run jitter and shimmer PCA
+df = pd.concat([df, pcaData], axis=1) # Add PCA data
+# reload the data so it's all numbers
+df.to_csv("processed_results.csv", index=False)
+df = pd.read_csv('processed_results.csv', header=0)
+df.sort_values('voiceID').head(20)
+
