@@ -1,0 +1,46 @@
+import sounddevice as sd
+from scipy.io.wavfile import write
+import tkinter as tk
+from tkinter import simpledialog
+
+
+ROOT = tk.Tk()
+ROOT.withdraw()
+# the input dialog
+holder = simpledialog.askstring(title="Test",
+                                  prompt="What would you like to name the file?")
+holder = holder 
+
+
+import ctypes  # An included library with Python install.
+def Mbox(title, text, style):
+    return ctypes.windll.user32.MessageBoxW(0, text, title, style)
+
+Mbox('Record', 'Recording will now start', 0)
+seconds=3 #duration of recording, can adjust if needed
+fs=44100 #sample rate
+
+myrecording2=sd.rec(int(seconds*fs), samplerate=fs, channels=1) #Records
+sd.wait()
+
+#sd.play(myrecording2) #UNCOMMENT IF YOU WANT TO HEAR THE RECORDING
+#sd.wait() #UNCOMMENT IF YOU WANT TO HEAR THE RECORDING
+
+write(holder+'.wav',fs, myrecording2) #saved as wav file
+Mbox('Record', 'Recording has been saved', 0)
+
+
+Some extra notes:
+You will be prompted to enter the name of the file. If nothing pops up on the screen, make sure to check the taskbar for an icon with a feather:
+
+Click on it and you should see a box that looks like this:
+
+Name the file as desired. If you want to change the name later on, you can change it as we would with any other file. Check where the files are being saved to, and click on the name to change the name:
+
+You can comment/uncomment lines of code by selecting/highlighting them and pressing Ctrl + 1. Use this to uncomment the two lines of code if you wish to immediately hear the recording after it has been recorded.
+Similarly, you can open the file already in your folders and listen to it from there.
+If the audio is too noisy or you wish to rerecord it, run the code again and name it the same exact name as the previous run - this will overwrite the old file and replace it with the new recording. (So if I wanted to redo the “SubjectA” recording, I would name it again “SubjectA”)
+The first test is only a three second recording, so seconds is set to 3. For tasks two and three, use the practice runs with the patients to see how long it takes to complete the task, and then change the seconds to equal the amount of time needed. So if 30 seconds is needed, replace the 3 with 30, so the line reads: seconds = 30
+
+Run the code for each new recording.
+Sidenote: The .wav files should automatically save to the directory you’re working in, which is shown in the upper right corner of the screen when Python is open:
