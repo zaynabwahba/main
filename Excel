@@ -1,39 +1,162 @@
 import tkinter as tk
 from tkinter import simpledialog
-from openpyxl import Workbook
-
-wb = Workbook()
-ROOT = tk.Tk()
-ROOT.withdraw()
-# the input dialog
-holder = simpledialog.askstring(title="Test",
-                                  prompt="What would you like to name the file?")
-wb.save(holder + '.xlsx')
-
-
 from openpyxl import load_workbook, Workbook
 from openpyxl.worksheet.table import Table, TableStyleInfo
+import ctypes  # An included library with Python install.
+from scipy.signal import filtfilt
+import scipy
+import scipy.io.wavfile as wav
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy.fft as fft
 
-def str_to_int_or_float(value):
-        if isinstance(value, bool):
-            return value
-        try:
-            return int(value)
-        except ValueError:
-            try:
-                return float(value)
-            except ValueError:
+def Mbox(title, text, style):
+    return ctypes.windll.user32.MessageBoxW(0, text, title, style)
+
+Mbox('Instructions', 'When prompted for file names typing just the name will suffice, there is no need to add .wav or .xlsx \nFor dates, please use a AA/BB/CC format. \nPress OK to proceed.', 0)
+
+ROOT = tk.Tk()
+ROOT.withdraw()
+date = simpledialog.askstring(title="Day",
+                                  prompt="Please enter the date")
+date = date
+
+########## USING PRE-RECORDED .WAV FILE ######################
+ROOT = tk.Tk()
+ROOT.withdraw()
+audio = simpledialog.askstring(title="File",
+                                  prompt="Please enter the .wav file name")
+audio = audio
+fs,x = wav.read(audio + '.wav') #fs = sampling frequency
+
+#sd.play(x,  fs) #UNCOMMENT IF YOU WANT TO HEAR THE RECORDING
+#sd.wait() #UNCOMMMENT IF YOU WANT TO HEAR THE RECORDING
+
+############## Plot 1: TIME DOMAIN
+fs=44100 #sample rate
+length = x.size / fs
+time = np.linspace(0., length, x.size)
+plt.plot(time, x)
+plt.xlabel("Time [s]")
+plt.ylabel("Amplitude")
+plt.show()
+
+############### Signl With Lowpass filter ########################
+def Filter(signal):
+    #fs = 44100
+    lowcut = 70.0
+    highcut = 300.0
+    
+    nyq = 0.5*fs
+    low = lowcut/nyq
+    high = highcut/nyq
+    
+    order = 4
+    
+    b, a = scipy.signal.butter(order, [low,high], 'bandpass', analog=False)
+    yy = scipy.signal.filtfilt(b,a, signal, axis = 0)
+    
+    return(yy)
+
+def Filter2(signal):
+    #fs = 44100
+    lowcut = 70.0
+    highcut = 300.0
+    
+    nyq = 0.5*fs
+    low = lowcut/nyq
+    high = highcut/nyq
+    
+    order = 2
+    
+    b, a = scipy.signal.butter(order, [low,high], 'bandpass', analog=False)
+    yy = scipy.signal.filtfilt(b,a, signal, axis = 0)
+    
+    return(yy)
+
+fx = Filter(x) #THIS CALLS ON THE FUNCTION TO FILTER THE RECORDING
+
+X2 = fft.fft(fx) #converting to freq domain, a complex value
+N2 = X2.size #taking the length of the sample
+freqbin2=np.linspace(0,fs,N2);
+amp2=np.abs(X2)/fs #taking only the magnitude portion of the complex value
+pitch = freqbin2[np.argmax(amp2)]
+
+
+if pitch > 300:
+    fx = Filter2(x)
+    X2 = fft.fft(fx)
+    amp2 = np.abs(X2)/fs
+    pitch = freqbin2[np.argmax(amp2)]
+pitch = round(pitch,2)
+print('filtered pitch value =', pitch, 'Hz')
+
+################################ Asking for input up-front
+ROOT = tk.Tk()
+ROOT.withdraw()
+option = simpledialog.askstring(title="Profile",
+                                prompt='Would you like to create a new profile or updating an existing one? \nType "update" or "new"')
+
+################################ CREATING PATIENT PROFILE
+if option.lower() in ['new']:    
+    ROOT = tk.Tk()
+    ROOT.withdraw()
+    holder = simpledialog.askstring(title="Profile",
+                                      prompt="What would you like to name the file?")
+    wb = Workbook()
+    wb.save(holder + '.xlsx')
+        
+    def str_to_int_or_float(value):
+            if isinstance(value, bool):
                 return value
-wb = Workbook()
-ws = wb.active
-ws.title = 'Players info'
-ws.append(['First name', 'Last name', 'Jersey', 'Height [mts]', 'NBA debut year', 'Weight [kgs]'])
-nba_players = [{'firstName': 'LeBron', 'lastName': 'James', 'jersey': '2', 'heightMeters': '2.03', 'nbaDebutYear': '2003', 'weightKilograms': '113.4'}, {'firstName': 'LaMarcus', 'lastName': 'Aldridge', 'jersey': '12', 'heightMeters': '2.11', 'nbaDebutYear': '2006', 'weightKilograms': '117.9'}, {'firstName': 'Kawhi', 'lastName': 'Leonard', 'jersey': '2', 'heightMeters': '2.01', 'nbaDebutYear': '2011', 'weightKilograms':'104.3'}, {'firstName': 'Jabari', 'lastName': 'Parker', 'jersey': '2', 'heightMeters': '2.03', 'nbaDebutYear': '2014', 'weightKilograms': '111.1'}]
-for player in nba_players:
-        ws.append(list(map(str_to_int_or_float, player.values())))
-last_cell = ws.cell(row = ws.max_row, column = ws.max_column).coordinate
-player_table = Table(displayName = 'PlayerTable', ref = 'A1:{}'.format(last_cell))
-style = TableStyleInfo(name = 'TableStyleMedium6', showRowStripes=True)
-player_table.tableStyleInfo = style
-ws.add_table(player_table)
-wb.save(holder + '.xlsx')
+            try:
+                return int(value)
+            except ValueError:
+                try:
+                    return float(value)
+                except ValueError:
+                    return value
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Vocal Analysis'
+    
+    ws.append(['Date', 'Pitch', 'State'])
+    parameters = [{'day': date, 'pitch': pitch, 'state': 'Good'}]
+    for parm in parameters:
+            ws.append(list(map(str_to_int_or_float, parm.values())))
+    last_cell = ws.cell(row = ws.max_row, column = ws.max_column).coordinate
+    patient_table = Table(displayName = 'PatientTable', ref = 'A1:{}'.format(last_cell))
+    style = TableStyleInfo(name = 'TableStyleMedium6', showRowStripes=True)
+    patient_table.tableStyleInfo = style
+    ws.add_table(patient_table)
+    wb.save(holder + '.xlsx')
+    Mbox('Success', 'Patient profile has been created', 0)
+
+############################## UPDATING PATIENT PROFILE
+elif option.lower() in ['update']:
+    temp = simpledialog.askstring(title="Profile",
+                                      prompt="Which profile would you like to update?")
+    update = load_workbook(temp + '.xlsx') #this opens and loads the file 
+    ws = update["Vocal Analysis"] #opens the exact SHEET we will be writing to
+    
+    max_column=ws.max_column #gets max column count 
+    max_row=ws.max_row #gets max row count
+    newR = max_row + 1
+    s = str(newR) #converts to string in order to be able to append the strings together
+    ws['A' + s] = date 
+    ws['B' + s] = pitch
+    ws['c' + s] = 'Good' #im hard coding the value into this cell.
+     
+    last_cell = ws.cell(row = ws.max_row, column = ws.max_column).coordinate #this gets the cell coorindate (ex. A4)
+    my_table = ws.tables['PatientTable']
+    my_table.ref = ref = 'A1:{}'.format(last_cell) #this upaetes the range of the cells to include our new values
+    style = TableStyleInfo(name = 'TableStyleMedium6', showRowStripes=True)
+    my_table.tableStyleInfo = style
+    
+    update.save(temp + '.xlsx')
+    Mbox('Success', 'Patient profile has been updated', 0)
+
+############ invalid input option   
+else:
+    Mbox('Input', 'Not a valid input, please run again', 0)
