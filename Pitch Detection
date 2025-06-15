@@ -1,0 +1,78 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import soundfile as sf
+import sounddevice as sd
+import scipy
+from scipy.io.wavfile import read
+from scipy.io.wavfile import write
+from IPython.display import Audio
+from scipy.io import wavfile as wav
+import numpy as np
+import numpy.fft as fft
+from scipy.signal import filtfilt
+
+# fs=44100
+# seconds=4 
+# recordings=['8am.wav','12pm.wav','4pm.wav','8pm.wav']
+# for i in range (4):
+#     rec = sd.rec(int(seconds*fs), samplerate=fs, channels=1)
+#     sd.wait()
+#     write(recordings[i],fs,rec)
+#     fs,x= wav.read(recordings[i])
+fs=44100
+
+def Filter(signal):
+    #fs = 44100
+    lowcut = 70.0
+    highcut = 300.0
+    
+    nyq = 0.5*fs
+    low = lowcut/nyq
+    high = highcut/nyq
+    
+    order = 4
+    
+    b, a = scipy.signal.butter(order, [low,high], 'bandpass', analog=False)
+    y = scipy.signal.filtfilt(b,a, signal, axis = 0)
+    
+    return(y)
+
+#%%
+#Xylabel=['8 am Recording','12 pm Recording','4 pm Recording','8 pm Recording'] # Y labels
+stitle=['8 am Recording','12 pm Recording','4 pm Recording','8 pm Recording']
+recordings=['1.wav','2.wav','3.wav','4.wav']
+plt.figure('External Microphone Feasability Testing - Time Domain',figsize=(8,8)) 
+for i in range(4):
+    plt.subplot(4,1,i+1)
+    fs,x = wav.read(recordings[i])
+    time = np.arange(len(x))/float(fs)
+    plt.plot(time,x)
+    plt.xlim(1,3)
+    plt.ylim(-0.25,0.25)
+    plt.title(stitle[i], fontsize=10)
+    plt.xlabel('Time (s)', fontsize=10)
+    plt.ylabel('Amplitude',fontsize=10)
+    plt.tight_layout()
+
+#%%
+
+plt.figure('External Microphone Feasability Testing - Frequency Domain',figsize=(8,8)) 
+recordings=['1.wav','3.wav','13.wav','16.wav']
+for i in range(4):
+    plt.subplot(2,2,i+1)
+    fs,x = wav.read(recordings[i])
+    fx = Filter(x)
+    X=fft.fft(fx)
+    N=X.size
+    freqbin=np.arange(0,N)/N*fs                           
+    plt.plot(freqbin,np.abs(X))
+    #plt.plot(freqbin,20*np.log10(np.abs(X))) # amplitude can be in dB
+    plt.xlim([0,fs/20])
+    plt.title(stitle[i]) 
+    plt.xlabel('Frequency (Hz)') 
+    plt.ylabel('Amplitude')
+    pitch=freqbin[np.argmax(np.abs(X))]
+    print('Fundamental Frequency (F0) =', freqbin[np.argmax(np.abs(X))], 'Hz')
+    pass
+    plt.tight_layout()
+    plt.show()
