@@ -1,0 +1,39 @@
+import tkinter as tk
+from tkinter import simpledialog
+from openpyxl import Workbook
+
+wb = Workbook()
+ROOT = tk.Tk()
+ROOT.withdraw()
+# the input dialog
+holder = simpledialog.askstring(title="Test",
+                                  prompt="What would you like to name the file?")
+wb.save(holder + '.xlsx')
+
+
+from openpyxl import load_workbook, Workbook
+from openpyxl.worksheet.table import Table, TableStyleInfo
+
+def str_to_int_or_float(value):
+        if isinstance(value, bool):
+            return value
+        try:
+            return int(value)
+        except ValueError:
+            try:
+                return float(value)
+            except ValueError:
+                return value
+wb = Workbook()
+ws = wb.active
+ws.title = 'Players info'
+ws.append(['First name', 'Last name', 'Jersey', 'Height [mts]', 'NBA debut year', 'Weight [kgs]'])
+nba_players = [{'firstName': 'LeBron', 'lastName': 'James', 'jersey': '2', 'heightMeters': '2.03', 'nbaDebutYear': '2003', 'weightKilograms': '113.4'}, {'firstName': 'LaMarcus', 'lastName': 'Aldridge', 'jersey': '12', 'heightMeters': '2.11', 'nbaDebutYear': '2006', 'weightKilograms': '117.9'}, {'firstName': 'Kawhi', 'lastName': 'Leonard', 'jersey': '2', 'heightMeters': '2.01', 'nbaDebutYear': '2011', 'weightKilograms':'104.3'}, {'firstName': 'Jabari', 'lastName': 'Parker', 'jersey': '2', 'heightMeters': '2.03', 'nbaDebutYear': '2014', 'weightKilograms': '111.1'}]
+for player in nba_players:
+        ws.append(list(map(str_to_int_or_float, player.values())))
+last_cell = ws.cell(row = ws.max_row, column = ws.max_column).coordinate
+player_table = Table(displayName = 'PlayerTable', ref = 'A1:{}'.format(last_cell))
+style = TableStyleInfo(name = 'TableStyleMedium6', showRowStripes=True)
+player_table.tableStyleInfo = style
+ws.add_table(player_table)
+wb.save(holder + '.xlsx')
